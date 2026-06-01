@@ -1,0 +1,75 @@
+# Context and working directories (should never be committed)
+@file:context/
+context/
+current-issue/
+
+# Common development artifacts
+node_modules/
+.env
+.env.*
+dist/
+build/
+coverage/
+*.log
+logs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+.venv/lib/
+.venv/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Temporary and system files
+*.tmp
+.cache/
+.pytest_cache/
+.coverage
+.venv/
+
+# OS-specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+._.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Git-related
+.git/
+.gitattributes
+
+# Local project-specific ignores
+local/
+.local/
+tmp/
+temp/

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# ==================================================================
+#  bin/sweptbyte -- sole entry point
+#  ByteCrest Corp  v2.0.0
+# ==================================================================
+
+set -euo pipefail
+
+VERSION="2.0.0"
+LIB_DIR="${LIB_DIR:-/usr/local/lib/sweptbyte}"
+CORE_DIR="${CORE_DIR:-/usr/local/lib/sweptbyte/core}"
+
+# ── Verify common.sh exists before sourcing ──────────────────────────
+if [[ ! -f "$LIB_DIR/common.sh" ]]; then
+  echo "sweptbyte: missing $LIB_DIR/common.sh" >&2
+  echo "Repair with: curl -fsSL https://raw.githubusercontent.com/bytecrest43/sweptbyte/main/install.sh | bash" >&2
+  exit 1
+fi
+
+source "$LIB_DIR/common.sh"
+
+SCAN_ONLY=false
+
+show_help() {
+  cat <<EOF
+sweptbyte --scan-only        scan system and report, no cleaning
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --scan-only)  SCAN_ONLY=true ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      die "Unknown option: $1"
+      ;;
+  esac
+  shift
+done
+export SCAN_ONLY
+
+# ── Root check ───────────────────────────────────────────────────────
+if [[ "$EUID" -ne 0 ]]; then
+  die "sweptbyte must be run as root. Use: sudo sweptbyte"
+fi
+
+# ── OS detection ─────────────────────────────────────────────────────
+OS=$(detect_os)
+export OS
+
+case "$OS" in
+  debian) OS_LABEL="Ubuntu / Debian" ;;
+  arch)   OS_LABEL="Arch Linux"      ;;
+  fedora) OS_LABEL="Fedora"          ;;
+  rhel)   OS_LABEL="RHEL / CentOS"   ;;
+  alpine) OS_LABEL="Alpine Linux"    ;;
+  macos)  OS_LABEL="macOS"           ;;
+  *)      OS_LABEL="Linux"           ;;
+esac
+
+# ── Splash ───────────────────────────────────────────────────────────
+show_splash
+
+# ── Meta row ─────────────────────────────────────────────────────────
+TIMESTAMP=$(date '+%Y-%m-%d  %H:%M:%S')
+HOSTNAME_VAL=$(hostname)
+USER_NAME="${SUDO_USER:-$(whoami)}"
+
+printf "  ${C_GREY}Host${C_RESET}  ${C_GOLD}%-22s${C_RESET}  ${C_GREY}User${C_RESET}  ${C_GOLD}%-14s${C_RESET}  ${C_GREY}Time${C_RESET}  ${C_GOLD}%s${C_RESET}\n" \
+  "$HOSTNAME_VAL" "$USER_NAME" "$TIMESTAMP"
+printf "  ${C_GREY}OS  ${C_RESET}  ${C_GOLD}%s${C_RESET}\n" "$OS_LABEL"
+echo ""
+echo -e "${C_GREY}$(repeat_char "$G_BAR_H" "$COLS")${C_RESET}"
+
+# ── Sudo authentication ─────────────────────────────────────────────
+echo ""
+echo -e "  ${C_BOLD}${C_BRIGHT_GOLD}${G_DIAMOND} AUTHENTICATION REQUIRED${C_RESET}"
+echo -e "  ${C_GREY}Elevated privileges are needed for system operations.${C_RESET}"
+echo -e "  ${C_GREY}You will be prompted once -- no further interruptions.${C_RESET}"
+echo ""
+
+if ! sudo -v; then
+  echo ""
+  die "Authentication failed. Aborting."
+fi
+
+echo -e "  ${C_GREEN}${G_CHECK}  Access granted -- proceeding.${C_RESET}"
+echo ""
+echo -e "${C_GREY}$(repeat_char "$G_BAR_H" "$COLS")${C_RESET}"
+
+# ── Sudo keepalive ───────────────────────────────────────────────────
+while true; do sudo -n true; sleep 50; kill -0 "$$" || exit; done 2>/dev/null &
+SUDO_PID=$!
+trap 'kill "$SUDO_PID" 2>/dev/null; echo ""' EXIT
+
+# ── Deep system scan ─────────────────────────────────────────────────
+if command -v python3 &>/dev/null && [[ -f "$CORE_DIR/scan.py" ]]; then
+  echo ""
+  echo -e "  ${C_BOLD}${C_BRIGHT_GOLD}${G_DIAMOND} SCANNING SYSTEM...${C_RESET}"
+  echo ""
+  python3 "$CORE_DIR/scan.py" \
+    --os "$OS" \
+    --real-home "$REAL_HOME" \
+    --output /tmp/sweptbyte-scan.json
+else
+  die "Missing python3 or $CORE_DIR/scan.py -- repair with the installer."
+fi
+
+if [[ "$SCAN_ONLY" == "true" ]]; then
+  exit 0
+fi
+
+# ── Disk snapshot — before cleaning ──────────────────────────────────
+if command -v python3 &>/dev/null && [[ -f "$CORE_DIR/report.py" ]]; then
+  DISK_BEFORE=$(python3 "$CORE_DIR/report.py" --snapshot)
+  export DISK_BEFORE
+fi
+
+# ── Dispatch ─────────────────────────────────────────────────────────
+case "$OS" in
+  macos)
+    if [[ ! -f "$LIB_DIR/macos.sh" ]]; then
+      die "Missing $LIB_DIR/macos.sh -- repair with the installer."
+    fi
+    source "$LIB_DIR/macos.sh"
+    run_macos
+    ;;
+  *)
+    if [[ ! -f "$LIB_DIR/linux.sh" ]]; then
+      die "Missing $LIB_DIR/linux.sh -- repair with the installer."
+    fi
+    source "$LIB_DIR/linux.sh"
+    run_linux
+    ;;
+esac
+
+# ── Disk report — after cleaning ─────────────────────────────────────
+if command -v python3 &>/dev/null && [[ -f "$CORE_DIR/report.py" ]] && [[ -n "${DISK_BEFORE:-}" ]]; then
+  python3 "$CORE_DIR/report.py" --compare "$DISK_BEFORE"
+fi
+
+# ── Restart prompt ────────────────────────────────────────────────────
+RESTART_NEEDED=$(python3 -c "
+import json, os
+if os.path.exists('/tmp/sweptbyte-scan.json'):
+    d = json.load(open('/tmp/sweptbyte-scan.json'))
+    print('yes' if d.get('restart_required', False) else 'no')
+else:
+    print('no')
+" 2>/dev/null || echo "no")
+
+if [[ "$RESTART_NEEDED" == "yes" ]]; then
+  echo ""
+  echo -e "  ${C_BOLD}${C_BRIGHT_GOLD}${G_DIAMOND} RESTART RECOMMENDED${C_RESET}"
+  echo -e "  ${C_GREY}Kernel changes were made. A restart is required for full effect.${C_RESET}"
+  echo ""
+  echo -e "  ${C_GOLD}Restart now? [y/N]${C_RESET} \c"
+  read -r REPLY
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    sudo reboot
+  fi
+fi
+
+# ── Final banner ─────────────────────────────────────────────────────
+echo ""
+echo -e "${C_BRIGHT_GOLD}$(repeat_char "$G_HH" "$COLS")${C_RESET}"
+echo ""
+center_text "${C_BOLD}${C_GREEN}${G_CHECK}  ALL OPERATIONS COMPLETE${C_RESET}"
+echo ""
+center_text "${C_GREY}${C_DIM}System cleaned and optimised successfully.${C_RESET}"
+center_text "${C_GREY}${C_DIM}A reboot is recommended for best results.${C_RESET}"
+echo ""
+echo -e "${C_BRIGHT_GOLD}$(repeat_char "$G_HH" "$COLS")${C_RESET}"
+center_text "${C_GREY}${C_DIM}SweptByte  ${G_DIAMOND}  A ByteCrest Corp Product  ${G_DIAMOND}  $(date '+%Y')${C_RESET}"
+echo -e "${C_BRIGHT_GOLD}$(repeat_char "$G_HH" "$COLS")${C_RESET}"
+echo ""
