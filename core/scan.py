@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCAN_OUTPUT = "/tmp/sweptbyte-scan.json"
+SCAN_OUTPUT = None  # Set dynamically based on user home
 MIN_LARGE_FILE = 100 * 1024 * 1024
 SCAN_DEADLINE_SECONDS = 55
 MAX_REPORTED_LARGE_FILES = 200
@@ -72,6 +72,13 @@ def human_size(num_bytes: int) -> str:
 
 def real_user() -> str | None:
     return os.environ.get("SUDO_USER") or os.environ.get("USER")
+
+
+def get_default_output() -> str:
+    """Get user-specific output path for scan results."""
+    home = os.path.expanduser("~")
+    scan_dir = os.path.join(home, ".sweptbyte")
+    return os.path.join(scan_dir, "scan.json")
 
 
 def path_exists(path: str) -> bool:
@@ -550,8 +557,31 @@ def build_report(os_name: str, real_home: str, output: str) -> dict[str, Any]:
         "total_reclaimable_bytes": cleanable_size(categories),
     }
 
-    with open(output, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2)
+    # Ensure output directory exists with proper permissions
+    try:
+        output_dir = os.path.dirname(output)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, mode=0o755, exist_ok=True)
+    except (OSError, PermissionError) as e:
+        print(f"Warning: Could not create output directory: {e}", file=__import__('sys').stderr)
+
+    # Write report with error handling
+    try:
+        with open(output, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+    except (OSError, PermissionError) as e:
+        print(f"Error writing report to {output}: {e}", file=__import__('sys').stderr)
+        print(f"Attempting to write to alternate location...", file=__import__('sys').stderr)
+        # Fallback to /dev/null if all else fails (still completes the scan)
+        try:
+            alt_output = os.path.join(os.path.expanduser("~"), ".sweptbyte", "scan.json")
+            os.makedirs(os.path.dirname(alt_output), mode=0o755, exist_ok=True)
+            with open(alt_output, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=2)
+            print(f"Report written to: {alt_output}", file=__import__('sys').stderr)
+        except Exception as fallback_error:
+            print(f"Failed to write to fallback location: {fallback_error}", file=__import__('sys').stderr)
+
     return report
 
 
@@ -614,7 +644,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Deep SweptByte system scan")
     parser.add_argument("--os", dest="os_name", required=True)
     parser.add_argument("--real-home", required=True)
-    parser.add_argument("--output", default=SCAN_OUTPUT)
+    parser.add_argument("--output", default=get_default_output())
     args = parser.parse_args()
 
     report = build_report(args.os_name, args.real_home, args.output)
